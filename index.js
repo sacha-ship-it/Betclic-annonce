@@ -1,10 +1,10 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, EmbedBuilder } = require('discord.js')
-const cron = require('node-cron')
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js')
 
 const TOKEN = process.env.TOKEN
 const CLIENT_ID = process.env.CLIENT_ID
 const GUILD_ID = process.env.GUILD_ID
 const SAVE_CHANNEL_ID = process.env.SAVE_CHANNEL_ID
+const TIMEZONE_OFFSET = 2 // Europe/Paris en été (UTC+2)
 
 const client = new Client({
   intents: [
@@ -21,7 +21,7 @@ let cronJobs = new Map()
 async function saveData() {
   try {
     const channel = await client.channels.fetch(SAVE_CHANNEL_ID)
-    const content = 'SCHEDULEDATA:' + JSON.stringify({ scheduledMessages, saveMessageId: null })
+    const content = 'SCHEDULEDATA:' + JSON.stringify({ scheduledMessages })
     if (saveMessageId) {
       const msg = await channel.messages.fetch(saveMessageId)
       await msg.edit(content)
@@ -50,22 +50,44 @@ async function loadData() {
   }
 }
 
+function parseParisDate(dateStr, heureStr) {
+  const [jour, mois, annee] = dateStr.split('/')
+  const [heures, minutes] = heureStr.split(':')
+
+  // On cree la date en heure de Paris (UTC+2 en ete)
+  const utcMs = Date.UTC(
+    parseInt(annee),
+    parseInt(mois) - 1,
+    parseInt(jour),
+    parseInt(heures) - TIMEZONE_OFFSET,
+    parseInt(minutes),
+    0
+  )
+
+  return new Date(utcMs)
+}
+
 function scheduleMessage(msg) {
   const date = new Date(msg.datetime)
   const now = new Date()
 
-  if (date <= now) return
+  if (date <= now) {
+    console.log('Annonce ' + msg.id + ' passee, ignoree')
+    return
+  }
 
   const delay = date.getTime() - now.getTime()
+  console.log('Annonce ' + msg.id + ' programmee dans ' + Math.round(delay / 1000) + ' secondes')
 
   const timeout = setTimeout(async () => {
     try {
       const channel = await client.channels.fetch(msg.channelId)
+      const finalContent = msg.content.replace(/\\n/g, '\n')
 
       if (msg.imageUrl) {
-        await channel.send({ content: msg.content, files: [msg.imageUrl] })
+        await channel.send({ content: finalContent, files: [msg.imageUrl] })
       } else {
-        await channel.send({ content: msg.content })
+        await channel.send({ content: finalContent })
       }
 
       scheduledMessages = scheduledMessages.filter(m => m.id !== msg.id)
@@ -92,8 +114,8 @@ async function registerCommands() {
       .setDescription('Programmer une annonce (admin)')
       .addChannelOption(o => o.setName('canal').setDescription('Canal de destination').setRequired(true))
       .addStringOption(o => o.setName('date').setDescription('Date au format JJ/MM/AAAA').setRequired(true))
-      .addStringOption(o => o.setName('heure').setDescription('Heure au format HH:MM').setRequired(true))
-      .addStringOption(o => o.setName('message').setDescription('Contenu de l\'annonce').setRequired(true))
+      .addStringOption(o => o.setName('heure').setDescription('Heure Paris au format HH:MM').setRequired(true))
+      .addStringOption(o => o.setName('message').setDescription('Contenu de l\'annonce (utilise \\n pour les sauts de ligne)').setRequired(true))
       .addStringOption(o => o.setName('image').setDescription('URL de l\'image (optionnel)').setRequired(false)),
 
     new SlashCommandBuilder()
@@ -145,16 +167,22 @@ client.on('interactionCreate', async interaction => {
     const message = interaction.options.getString('message')
     const image = interaction.options.getString('image') || null
 
-    const [jour, mois, annee] = date.split('/')
-    const [heures, minutes] = heure.split(':')
-    const datetime = new Date(annee, mois - 1, jour, heures, minutes, 0)
+    const datetime = parseParisDate(date, heure)
 
     if (isNaN(datetime.getTime()) || datetime <= new Date()) {
-      return interaction.reply({ content: 'Date ou heure invalide. Verifie le format JJ/MM/AAAA et HH:MM.', ephemeral: true })
+      return interaction.reply({ content: 'Date ou heure invalide ou passee. Verifie le format JJ/MM/AAAA et HH:MM (heure de Paris).', ephemeral: true })
     }
 
     const id = generateId()
-    const newMsg = { id, channelId: canal.id, channelName: canal.name, datetime: datetime.toISOString(), content: message, imageUrl: image }
+    const newMsg = {
+      id,
+      channelId: canal.id,
+      channelName: canal.name,
+      datetime: datetime.toISOString(),
+      content: message,
+      imageUrl: image
+    }
+
     scheduledMessages.push(newMsg)
     scheduleMessage(newMsg)
     await saveData()
@@ -164,7 +192,7 @@ client.on('interactionCreate', async interaction => {
       .setDescription(
         `**ID :** ${id}\n` +
         `**Canal :** <#${canal.id}>\n` +
-        `**Date :** ${date} a ${heure}\n` +
+        `**Date :** ${date} a ${heure} (heure Paris)\n` +
         `**Message :** ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}\n` +
         `**Image :** ${image ? 'Oui' : 'Non'}`
       )
@@ -233,11 +261,14 @@ client.on('interactionCreate', async interaction => {
     if (newImage) msg.imageUrl = newImage
 
     if (newDate || newHeure) {
-      const dateStr = newDate || new Date(msg.datetime).toLocaleDateString('fr-FR')
-      const heureStr = newHeure || new Date(msg.datetime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
-      const [jour, mois, annee] = dateStr.split('/')
-      const [heures, minutes] = heureStr.split(':')
-      const datetime = new Date(annee, mois - 1, jour, heures, minutes, 0)
+      const existingDate = new Date(msg.datetime)
+      const existingDateStr = existingDate.toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })
+      const existingHeureStr = existingDate.toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' })
+
+      const dateStr = newDate || existingDateStr
+      const heureStr = newHeure || existingHeureStr
+
+      const datetime = parseParisDate(dateStr, heureStr)
 
       if (isNaN(datetime.getTime()) || datetime <= new Date()) {
         return interaction.reply({ content: 'Date ou heure invalide.', ephemeral: true })
