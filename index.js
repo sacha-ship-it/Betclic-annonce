@@ -4,7 +4,8 @@ const TOKEN = process.env.TOKEN
 const CLIENT_ID = process.env.CLIENT_ID
 const GUILD_ID = process.env.GUILD_ID
 const SAVE_CHANNEL_ID = process.env.SAVE_CHANNEL_ID
-const TIMEZONE_OFFSET = 2 // Europe/Paris en été (UTC+2)
+const ALLOWED_ROLE_ID = process.env.ALLOWED_ROLE_ID
+const TIMEZONE_OFFSET = 2
 
 const client = new Client({
   intents: [
@@ -54,7 +55,6 @@ function parseParisDate(dateStr, heureStr) {
   const [jour, mois, annee] = dateStr.split('/')
   const [heures, minutes] = heureStr.split(':')
 
-  // On cree la date en heure de Paris (UTC+2 en ete)
   const utcMs = Date.UTC(
     parseInt(annee),
     parseInt(mois) - 1,
@@ -111,7 +111,7 @@ async function registerCommands() {
   const commands = [
     new SlashCommandBuilder()
       .setName('programmer')
-      .setDescription('Programmer une annonce (admin)')
+      .setDescription('Programmer une annonce')
       .addChannelOption(o => o.setName('canal').setDescription('Canal de destination').setRequired(true))
       .addStringOption(o => o.setName('date').setDescription('Date au format JJ/MM/AAAA').setRequired(true))
       .addStringOption(o => o.setName('heure').setDescription('Heure Paris au format HH:MM').setRequired(true))
@@ -124,12 +124,12 @@ async function registerCommands() {
 
     new SlashCommandBuilder()
       .setName('annulerannonce')
-      .setDescription('Annuler une annonce programmee (admin)')
+      .setDescription('Annuler une annonce programmee')
       .addStringOption(o => o.setName('id').setDescription('ID de l\'annonce').setRequired(true)),
 
     new SlashCommandBuilder()
       .setName('modifierannonce')
-      .setDescription('Modifier une annonce programmee (admin)')
+      .setDescription('Modifier une annonce programmee')
       .addStringOption(o => o.setName('id').setDescription('ID de l\'annonce').setRequired(true))
       .addStringOption(o => o.setName('message').setDescription('Nouveau message').setRequired(false))
       .addStringOption(o => o.setName('date').setDescription('Nouvelle date JJ/MM/AAAA').setRequired(false))
@@ -156,7 +156,7 @@ client.on('ready', async () => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return
 
-  const isAdmin = interaction.member.permissions.has('Administrator')
+  const isAdmin = interaction.member.permissions.has('Administrator') || interaction.member.roles.cache.has(ALLOWED_ROLE_ID)
 
   if (interaction.commandName === 'programmer') {
     if (!isAdmin) return interaction.reply({ content: 'Permission refusee.', ephemeral: true })
